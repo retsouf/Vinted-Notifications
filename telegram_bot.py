@@ -1,5 +1,5 @@
 from telegram import Update, Bot, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, ConversationHandler, CallbackQueryHandler
 import db, os, configuration_values, requests
 from pyVinted import Vinted, requester
 from traceback import print_exc
@@ -11,11 +11,11 @@ VER = "0.4.1"
 
 # verify if bot still running
 async def hello(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text(f'Hello {update.effective_user.first_name}')
+    await update.message.reply_text(f'Bot is currently working. Current version : {VER}.')
 
 
 # add a keyword to the db
-async def add_keyword(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def add_keyword(update: Update, context: ContextTypes.DEFAULT_TYPE) -> str:
 
     keyword = context.args
     if not keyword:
@@ -25,13 +25,25 @@ async def add_keyword(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     keyword = ' '.join(keyword).lower()
     if db.is_keyword_in_db(keyword) >= 1:
         await update.message.reply_text(f'Keyword "{keyword}" already exists')
+        return
     else:
         # add the keyword to the db
         db.add_keyword_to_db(keyword)
         # Create a string with all the keywords
         keyword_list = ("\n").join([str(i + 1) + ". " + j[0] for i, j in enumerate(db.get_keywords())])
-        await update.message.reply_text(f'Keyword "{keyword}" added. \nCurrent keywords: \n{keyword_list}')
+        #await update.message.reply_text(f'Keyword "{keyword}" added. \nCurrent keywords: \n{keyword_list}')
 
+        buttons = [
+            [
+                InlineKeyboardButton(text="Yes", callback_data=str(SELECT_CATEGORY)),
+                InlineKeyboardButton(text="No", callback_data=str(END)),
+            ],
+        ]
+        keyboard = InlineKeyboardMarkup(buttons)
+
+        await update.message.reply_text(f'Keyword "{keyword}" added. \n Should we specify a category?', reply_markup=keyboard)
+
+    return SELECTING_ACTION
 
 # remove a keyword from the db
 async def remove_keyword(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -228,10 +240,189 @@ items_queue = queues.Queue()
 # Create the item queue to send to telegram
 new_items_queue = queues.Queue()
 
+### CATEGORY HANDLERS
+
+
+
+# State definitions for top level conversation
+SELECTING_ACTION, SELECT_CATEGORY = map(chr, range(0, 2))
+# State definitions for second level conversation
+SELECTING_CATEGORY, SELECTING_GENDER = map(chr, range(2, 4))
+# State definitions for descriptions conversation
+SELECTING_SUBCATEGORY, TYPING = map(chr, range(4, 6))
+# Meta states
+STOPPING, SHOWING = map(chr, range(6, 8))
+# Shortcut for ConversationHandler.END
+END = ConversationHandler.END
+
+# Base categories
+(
+    WOMEN,
+    MEN,
+    DESIGNER,
+    KIDS,
+    HOME,
+    ELECTRONICS,
+    ENTERTAINMENT,
+    PET_CARE,
+) = map(chr, range(8, 16))
+
+# Different constants for this example
+(
+    A,
+    B,
+    C,
+    D,
+) = map(chr, range(16, 20))
+
+async def end(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    await update.callback_query.answer()
+
+    text = "See you around!"
+    await update.callback_query.edit_message_text(text=text)
+
+    return END
+
+async def select_category(update: Update, context: ContextTypes.DEFAULT_TYPE) -> str:
+    text = "Okay, please select the desired category"
+
+    buttons = [
+        [
+            InlineKeyboardButton(text="Women", callback_data=str(WOMEN)),
+            InlineKeyboardButton(text="Men", callback_data=str(MEN)),
+            InlineKeyboardButton(text="Designer", callback_data=str(DESIGNER)),
+        ],
+        [
+            InlineKeyboardButton(text="Kids", callback_data=str(KIDS)),
+            InlineKeyboardButton(text="Home", callback_data=str(HOME)),
+            InlineKeyboardButton(text="Electronics", callback_data=str(ELECTRONICS)),
+        ],
+        [
+            InlineKeyboardButton(text="Entertainment", callback_data=str(ENTERTAINMENT)),
+            InlineKeyboardButton(text="Pet Care", callback_data=str(PET_CARE)),
+        ],
+    ]
+    keyboard = InlineKeyboardMarkup(buttons)
+    await update.callback_query.answer()
+    await update.callback_query.edit_message_text(text=text, reply_markup=keyboard)
+
+    return SELECTING_CATEGORY
+
+async def print_result(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    print(query.data)
+    print(context.user_data[SELECTING_SUBCATEGORY])
+
+async def select_subcategory(update: Update, context: ContextTypes.DEFAULT_TYPE) -> str:
+    #context.user_data[CURRENT_LEVEL] = SELF
+
+    text = "Okay, please select the desired subcategory"
+
+    buttons = [
+        [
+            InlineKeyboardButton(text="option1", callback_data=str(A)),
+            InlineKeyboardButton(text="B", callback_data=str(B)),
+            InlineKeyboardButton(text="C", callback_data=str(C)),
+        ],
+    ]
+    keyboard = InlineKeyboardMarkup(buttons)
+    await update.callback_query.answer()
+    await update.callback_query.edit_message_text(text=text, reply_markup=keyboard)
+
+    return SELECTING_SUBCATEGORY
+
+
+select_subcategory_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(select_subcategory, pattern="^" + str(WOMEN) + "$")],
+        states={
+            SELECTING_SUBCATEGORY: [CallbackQueryHandler(print_result, pattern="^" + str(A) + "$")],
+        },
+        fallbacks=[
+            #CallbackQueryHandler(show_data, pattern="^" + str(SHOWING) + "$"),
+            #CallbackQueryHandler(end_second_level, pattern="^" + str(END) + "$"),
+            CommandHandler("end", end), # HERE SHOULD BE A STOP NESTED BLYAT ME
+        ],
+        map_to_parent={
+            # After showing data return to top level menu
+            SHOWING: SHOWING,
+            # Return to top level menu
+            END: SELECTING_ACTION,
+            # End conversation altogether
+            STOPPING: END,
+        },
+    )
+
+select_category_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(select_category, pattern="^" + str(SELECT_CATEGORY) + "$")],
+        states={
+            SELECTING_CATEGORY: [select_subcategory_conv, CallbackQueryHandler(end, pattern="^" + str(END) + "$")],
+        },
+        fallbacks=[
+            #CallbackQueryHandler(show_data, pattern="^" + str(SHOWING) + "$"),
+            #CallbackQueryHandler(end_second_level, pattern="^" + str(END) + "$"),
+            CommandHandler("end", end), # HERE SHOULD BE A STOP NESTED BLYAT ME
+        ],
+        map_to_parent={
+            # After showing data return to top level menu
+            SHOWING: SHOWING,
+            # Return to top level menu
+            END: SELECTING_ACTION,
+            # End conversation altogether
+            STOPPING: END,
+        },
+    )
+
+
+conv_handler = ConversationHandler(
+        entry_points=[CommandHandler("add_keyword", add_keyword)],
+        states={
+            SELECTING_ACTION: [select_category_conv, CallbackQueryHandler(end, pattern="^" + str(END) + "$")],  # type: ignore[dict-item]
+            STOPPING: [CommandHandler("add_keyword", add_keyword)],
+        },
+        fallbacks=[CommandHandler("end", end)],
+    )
+
+app.add_handler(conv_handler)
+
+
+
+
+
+
+#selection_handlers = [
+#        #select_category_conv,
+#        CallbackQueryHandler(select_category, pattern="^" + str(SELECTING_ACTION) + "$"),
+#        CallbackQueryHandler(end, pattern="^" + str(END) + "$"),
+#    ]
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 # Handler verify if bot is running
 app.add_handler(CommandHandler("hello", hello))
 # Keyword handlers
-app.add_handler(CommandHandler("add_keyword", add_keyword))
+#app.add_handler(CommandHandler("add_keyword", add_keyword))
 app.add_handler(CommandHandler("remove_keyword", remove_keyword))
 app.add_handler(CommandHandler("keywords", keywords))
 # Allowlist handlers
@@ -247,7 +438,7 @@ app.add_handler(CommandHandler("allowlist", allowlist))
 
 job_queue = app.job_queue
 # Every minute we check for new listings
-job_queue.run_repeating(background_worker, interval=60, first=10)
+#job_queue.run_repeating(background_worker, interval=60, first=10)
 # Every day we check for a new version
 job_queue.run_repeating(check_version, interval=86400, first=1)
 # Every day we clean the db
