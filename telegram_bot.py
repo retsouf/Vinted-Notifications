@@ -163,6 +163,8 @@ def get_user_country(profile_id):
             print("Couldn't get the country due to too many requests. Returning default value.")
             user_country = "XX"
     else:
+        print(response.status_code)
+        print(response.text)
         user_country = response.json()["user"]["country_iso_code"]
     return user_country
 
